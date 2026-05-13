@@ -52,8 +52,8 @@ def search_works(session: AO3.Session, page: int = 1) -> AO3.Search:
     search.update()
     return search
 
-def request(max_works: int = 20):
-    session = get_session()
+def request(max_works: int = 20, session: AO3.Session | None = None):
+    session = session or get_session()
     search = search_works(session, page=1)
     print(f"Total results: {search.total_results}")
 
@@ -67,5 +67,9 @@ def request(max_works: int = 20):
         count += 1
         time.sleep(2)
 
+def request_user(username: str = "pprestonlee"):
+    user = AO3.User(username)
+    print(f"User: {user.username}, # of Bookmarks: {user.bio}")
+
 if __name__ == "__main__":
-    request()
+    request_user()

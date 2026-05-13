@@ -7,6 +7,7 @@ from airflow.decorators import dag, task
 
 BUCKET = "ao3-raw"
 SLEEP_BETWEEN_REQUESTS = 2
+MAX_WORKS = 5_000
 
 
 @dag(
@@ -101,7 +102,7 @@ def ao3_ingest():
         scraped_ids = []
         page_num = 1
 
-        while True:
+        while len(scraped_ids) < MAX_WORKS:
             search = AO3.Search(
                 relationships="Hermione Granger/Draco Malfoy",
                 sort_column="kudos_count",
@@ -109,7 +110,18 @@ def ao3_ingest():
                 session=ao3_session,
                 page=page_num,
             )
-            search.update()
+
+            for attempt in range(5):
+                try:
+                    search.update()
+                    break
+                except Exception as e:
+                    wait = 30 * (attempt + 1)
+                    print(f"Search page {page_num} failed (attempt {attempt + 1}/5): {e}. Retrying in {wait}s...")
+                    time.sleep(wait)
+            else:
+                print(f"Search page {page_num} failed after 5 attempts, stopping.")
+                break
 
             if not search.results:
                 break
