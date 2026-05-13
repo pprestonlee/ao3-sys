@@ -78,7 +78,16 @@ def ao3_ingest():
         import boto3
         from botocore.client import Config
 
-        ao3_session = AO3.Session(os.environ["AO3_USERNAME"], os.environ["AO3_PASSWORD"])
+        for attempt in range(5):
+            try:
+                ao3_session = AO3.Session(os.environ["AO3_USERNAME"], os.environ["AO3_PASSWORD"])
+                break
+            except Exception as e:
+                wait = 30 * (attempt + 1)
+                print(f"Login failed (attempt {attempt + 1}/5): {e}. Retrying in {wait}s...")
+                time.sleep(wait)
+        else:
+            raise RuntimeError("AO3 login failed after 5 attempts")
 
         s3 = boto3.client(
             "s3",
@@ -116,7 +125,7 @@ def ao3_ingest():
                     search.update()
                     break
                 except Exception as e:
-                    wait = 30 * (attempt + 1)
+                    wait = 45 * (attempt + 1)
                     print(f"Search page {page_num} failed (attempt {attempt + 1}/5): {e}. Retrying in {wait}s...")
                     time.sleep(wait)
             else:
@@ -131,11 +140,17 @@ def ao3_ingest():
                 if work_id in already_stored:
                     continue
 
-                try:
-                    res = AO3.Work(result.id, load=True, load_chapters=False, session=ao3_session)
-                except Exception as e:
-                    print(f"Skipping work {result.id}: {e}")
-                    time.sleep(SLEEP_BETWEEN_REQUESTS)
+                res = None
+                for attempt in range(3):
+                    try:
+                        res = AO3.Work(result.id, load=True, load_chapters=False, session=ao3_session)
+                        break
+                    except Exception as e:
+                        wait = 15 * (attempt + 1)
+                        print(f"Work {result.id} attempt {attempt + 1}/3 failed: {e}. Retrying in {wait}s...")
+                        time.sleep(wait)
+                if res is None:
+                    print(f"Skipping work {result.id} after 3 failed attempts.")
                     continue
 
                 if res.language != "English":
@@ -181,11 +196,7 @@ def ao3_ingest():
         return scraped_ids
 
     @task
-    def load_to_postgres(work_ids: list[int]):
-        if not work_ids:
-            print("No new works to load.")
-            return
-
+    def load_to_postgres(_signal):
         import boto3
         import psycopg2
         from botocore.client import Config
@@ -208,6 +219,23 @@ def ao3_ingest():
             password=os.environ["POSTGRES_PASSWORD"],
         )
 
+        minio_ids = {
+            obj["Key"].split("/")[1].replace(".json", "")
+            for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix="works/")
+            for obj in page.get("Contents", [])
+        }
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT work_id::text FROM dev.works")
+            postgres_ids = {row[0] for row in cur.fetchall()}
+
+        work_ids = minio_ids - postgres_ids
+        if not work_ids:
+            print("No new works to load.")
+            conn.close()
+            return
+
+        print(f"Loading {len(work_ids)} works from MinIO into Postgres...")
         for work_id in work_ids:
             obj = s3.get_object(Bucket=BUCKET, Key=f"works/{work_id}.json")
             work = json.loads(obj["Body"].read())
@@ -268,9 +296,9 @@ def ao3_ingest():
         print(f"Loaded {len(work_ids)} works into Postgres.")
 
     schema = ensure_schema()
-    work_ids = scrape_to_minio()
-    schema >> work_ids
-    load_to_postgres(work_ids)
+    scraped = scrape_to_minio()
+    schema >> scraped
+    load_to_postgres(scraped)
 
 
 ao3_ingest()
