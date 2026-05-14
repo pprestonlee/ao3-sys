@@ -8,6 +8,7 @@ from airflow.decorators import dag, task
 BUCKET = "ao3-raw"
 SLEEP_BETWEEN_REQUESTS = 2
 MAX_WORKS = 5_000
+REFRESH_AFTER_DAYS = 7
 
 
 @dag(
@@ -102,10 +103,15 @@ def ao3_ingest():
         if BUCKET not in existing:
             s3.create_bucket(Bucket=BUCKET)
 
+        from datetime import timezone
+        refresh_cutoff = datetime.now(tz=timezone.utc) - timedelta(days=REFRESH_AFTER_DAYS)
+
+        # Skip works stored within the last 7 days; re-scrape older ones so stats stay fresh
         already_stored = {
             obj["Key"].split("/")[1].replace(".json", "")
             for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix="works/")
             for obj in page.get("Contents", [])
+            if obj["LastModified"] > refresh_cutoff
         }
 
         scraped_ids = []
@@ -219,19 +225,19 @@ def ao3_ingest():
             password=os.environ["POSTGRES_PASSWORD"],
         )
 
-        minio_ids = {
+        from datetime import timezone
+        refresh_cutoff = datetime.now(tz=timezone.utc) - timedelta(days=REFRESH_AFTER_DAYS)
+
+        # Load works that are either new (not in Postgres) or recently re-scraped (updated in MinIO)
+        work_ids = {
             obj["Key"].split("/")[1].replace(".json", "")
             for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix="works/")
             for obj in page.get("Contents", [])
+            if obj["LastModified"] > refresh_cutoff
         }
 
-        with conn.cursor() as cur:
-            cur.execute("SELECT work_id::text FROM dev.works")
-            postgres_ids = {row[0] for row in cur.fetchall()}
-
-        work_ids = minio_ids - postgres_ids
         if not work_ids:
-            print("No new works to load.")
+            print("No works to load.")
             conn.close()
             return
 
