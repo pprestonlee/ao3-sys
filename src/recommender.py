@@ -264,11 +264,11 @@ def top_tag_features(n: int = 30):
 
 
 if __name__ == "__main__":
-    inspect_tags(34500952)
+    inspect_tags(35452315)
 
     model, index = train()
 
-    seed = index.iloc[0]
+    seed = index.loc[index["work_id"] == 35452315].iloc[0]
     print(f"\nSeed: {seed['title']} (work_id={seed['work_id']}, kudos={seed['kudos']})")
     print("\nTop 10 recommendations:")
     print(recommend(seed["work_id"], n=10).to_string(index=False))

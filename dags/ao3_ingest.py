@@ -301,10 +301,18 @@ def ao3_ingest():
         conn.close()
         print(f"Loaded {len(work_ids)} works into Postgres.")
 
+    @task
+    def embed_to_qdrant(_signal):
+        import sys
+        sys.path.insert(0, "/opt/airflow/src")
+        from embedder import embed_corpus
+        embed_corpus()
+
     schema = ensure_schema()
     scraped = scrape_to_minio()
     schema >> scraped
-    load_to_postgres(scraped)
+    loaded = load_to_postgres(scraped)
+    embed_to_qdrant(loaded)
 
 
 ao3_ingest()
